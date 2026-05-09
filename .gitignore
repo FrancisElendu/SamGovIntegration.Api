@@ -362,3 +362,4 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /SamGovIntegration.Api/appsettings.json
+/SamGovIntegration.Api/appsettings.Development.json
