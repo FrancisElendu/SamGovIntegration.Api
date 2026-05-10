@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using SamGovIntegration.Api.Data;
 using SamGovIntegration.Api.Models;
+using SamGovIntegration.Api.Models.ManualMappings;
 
 namespace SamGovIntegration.Api.Repositories
 {
@@ -93,11 +94,6 @@ namespace SamGovIntegration.Api.Repositories
 
         public async Task AddContractsBulkAsync(IEnumerable<ContractAwardEntity> contracts)
         {
-            //var existingPiids = await _context.ContractAwards
-            //    .Where(c => contractList.Select(x => x.Piid).Contains(c.Piid))
-            //    .Select(c => c.Piid)
-            //    .ToHashSetAsync();
-
             //because .ToHashSetAsync() is not supported in EF Core 6, we need to materialize the list first and then create a HashSet from it.
             // For bulk operations, use ExecuteUpdate or EF Core 7+ bulk operations
 
@@ -135,6 +131,108 @@ namespace SamGovIntegration.Api.Repositories
         public async Task<int> GetContractCountByBatchAsync(string batchId)
         {
             return await _context.ContractAwards.CountAsync(c => c.FetchBatchId == batchId);
+        }
+
+        public async Task<(IEnumerable<ContractAwardEntity> Contracts, int TotalCount)> GetStoredContractsAsync(
+        DateTime? startDate = null,
+        DateTime? endDate = null,
+        decimal? minAmount = null,
+        decimal? maxAmount = null,
+        int page = 1,
+        int pageSize = 50)
+        {
+            // Validate pagination parameters
+            page = page < 1 ? 1 : page;
+            pageSize = pageSize < 1 ? 50 : (pageSize > 100 ? 100 : pageSize);
+
+            // Start building the query
+            var query = _context.ContractAwards.AsQueryable();
+
+            // Apply date filters (using ApprovedDate)
+            if (startDate.HasValue)
+            {
+                query = query.Where(c => c.ApprovedDate >= startDate.Value);
+            }
+
+            if (endDate.HasValue)
+            {
+                query = query.Where(c => c.ApprovedDate <= endDate.Value);
+            }
+
+            // Apply dollar amount filters
+            if (minAmount.HasValue)
+            {
+                query = query.Where(c => c.DollarsObligated >= minAmount.Value);
+            }
+
+            if (maxAmount.HasValue)
+            {
+                query = query.Where(c => c.DollarsObligated <= maxAmount.Value);
+            }
+
+            // Get total count before pagination
+            var totalCount = await query.CountAsync();
+
+            // Apply pagination and ordering (most recent first)
+            var contracts = await query
+                .OrderByDescending(c => c.ApprovedDate)
+                .ThenBy(c => c.Piid)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+
+            return (contracts, totalCount);
+        }
+
+        public async Task<ContractSummaryStats> GetContractSummaryStatsAsync(
+            DateTime? startDate = null,
+            DateTime? endDate = null)
+        {
+            var query = _context.ContractAwards.AsQueryable();
+
+            // Apply date filters
+            if (startDate.HasValue)
+            {
+                query = query.Where(c => c.ApprovedDate >= startDate.Value);
+            }
+
+            if (endDate.HasValue)
+            {
+                query = query.Where(c => c.ApprovedDate <= endDate.Value);
+            }
+
+            // Calculate statistics
+            var stats = new ContractSummaryStats();
+
+            if (await query.AnyAsync())
+            {
+                stats.TotalContracts = await query.CountAsync();
+                stats.TotalObligatedAmount = await query.SumAsync(c => c.DollarsObligated);
+                stats.AverageContractAmount = await query.AverageAsync(c => c.DollarsObligated);
+                stats.MinContractAmount = await query.MinAsync(c => c.DollarsObligated);
+                stats.MaxContractAmount = await query.MaxAsync(c => c.DollarsObligated);
+                stats.UniqueAwardees = await query.Select(c => c.AwardeeUei).Distinct().CountAsync();
+
+                // Get top 5 agencies by contract count
+                stats.TopAgencies = await query
+                    .Where(c => c.DepartmentOrAgency != null)
+                    .GroupBy(c => c.DepartmentOrAgency)
+                    .Select(g => new { Agency = g.Key, Count = g.Count() })
+                    .OrderByDescending(x => x.Count)
+                    .Take(5)
+                    .ToDictionaryAsync(g => g.Agency, g => g.Count);
+
+                // Get top 5 NAICS codes by contract count
+                stats.TopNaicsCodes = await query
+                    .Where(c => c.NaicsCode != null)
+                    .GroupBy(c => c.NaicsCode)
+                    .Select(g => new { Naics = g.Key, Count = g.Count() })
+                    .OrderByDescending(x => x.Count)
+                    .Take(5)
+                    .ToDictionaryAsync(g => g.Naics, g => g.Count);
+            }
+
+            return stats;
         }
     }
 }
