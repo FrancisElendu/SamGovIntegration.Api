@@ -94,10 +94,19 @@ namespace SamGovIntegration.Api.Repositories
 
         public async Task AddContractsBulkAsync(IEnumerable<ContractAwardEntity> contracts)
         {
+            // Clear all tracked entities to avoid conflicts
+            _context.ChangeTracker.Clear();
+
             var contractList = contracts.ToList();
 
             if (!contractList.Any())
                 return;
+
+            // Remove duplicates
+            var uniqueContracts = contractList
+                .GroupBy(c => c.Piid?.Trim())
+                .Select(g => g.First())
+                .ToList();
 
             // Clean Piid values (trim whitespace)
             foreach (var contract in contractList)
@@ -110,30 +119,21 @@ namespace SamGovIntegration.Api.Repositories
                 .Select(c => c.Piid)
                 .ToListAsync();
 
+            var existingPiids = await _context.ContractAwards
+            .Where(c => uniqueContracts.Select(x => x.Piid.ToUpper()).Contains(c.Piid.ToUpper()))
+            .Select(c => c.Piid.ToUpper())
+            .ToListAsync();
+
             var existingPiidsSet = new HashSet<string>(existingContractPiids, StringComparer.OrdinalIgnoreCase);
 
-            var toAdd = new List<ContractAwardEntity>();
-            var toUpdate = new List<ContractAwardEntity>();
+            var toAdd = uniqueContracts.Where(c => !existingPiids.Contains(c.Piid.ToUpper())).ToList();
+            var toUpdate = uniqueContracts.Where(c => existingPiids.Contains(c.Piid.ToUpper())).ToList();
 
-            foreach (var contract in contractList)
-            {
-                if (existingPiidsSet.Contains(contract.Piid))
-                {
-                    toUpdate.Add(contract);
-                }
-                else
-                {
-                    toAdd.Add(contract);
-                }
-            }
-
-            // Handle new contracts
             if (toAdd.Any())
             {
                 await _context.ContractAwards.AddRangeAsync(toAdd);
             }
 
-            // Handle existing contracts
             if (toUpdate.Any())
             {
                 foreach (var contract in toUpdate)
@@ -142,8 +142,49 @@ namespace SamGovIntegration.Api.Repositories
                 }
                 _context.ContractAwards.UpdateRange(toUpdate);
             }
-
             await _context.SaveChangesAsync();
+
+            //var toAdd = new List<ContractAwardEntity>();
+            //var toUpdate = new List<ContractAwardEntity>();
+
+            //foreach (var contract in contractList)
+            //{
+            //    if (existingPiidsSet.Contains(contract.Piid))
+            //    {
+            //        toUpdate.Add(contract);
+            //    }
+            //    else
+            //    {
+            //        toAdd.Add(contract);
+            //    }
+            //}
+
+            //// Handle new contracts
+            //if (toAdd.Any())
+            //{
+            //    try
+            //    {
+            //        await _context.ContractAwards.AddRangeAsync(toAdd);
+            //    }
+            //    catch (Exception ex)
+            //    {
+
+            //        throw;
+            //    }
+
+            //}
+
+            //// Handle existing contracts
+            //if (toUpdate.Any())
+            //{
+            //    foreach (var contract in toUpdate)
+            //    {
+            //        contract.DateFetched = DateTime.UtcNow;
+            //    }
+            //    _context.ContractAwards.UpdateRange(toUpdate);
+            //}
+
+            //await _context.SaveChangesAsync();
 
             ////because .ToHashSetAsync() is not supported in EF Core 6, we need to materialize the list first and then create a HashSet from it.
             //// For bulk operations, use ExecuteUpdate or EF Core 7+ bulk operations
